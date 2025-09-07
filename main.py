@@ -1,8 +1,26 @@
-import discord
 import os
+import discord
 from discord.ext import commands
 from discord import app_commands
+from threading import Thread
+from flask import Flask
 
+# =======================
+# Flask dalis (Web service)
+# =======================
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Bot is running!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+# =======================
+# Discord dalis
+# =======================
 intents = discord.Intents.default()
 intents.message_content = True
 intents.messages = True
@@ -11,7 +29,6 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
-
 splits = {}
 
 @bot.event
@@ -19,7 +36,7 @@ async def on_ready():
     print(f"Joined as {bot.user}")
     try:
         synced = await tree.sync()
-        print(f"Slash commands sinchronized ({len(synced)})")
+        print(f"Slash commands synchronized ({len(synced)})")
     except Exception as e:
         print(e)
 
@@ -82,16 +99,25 @@ async def on_message(message):
         if message.author.id in data["members"] and not data["members"][message.author.id]:
             data["members"][message.author.id] = True
             await message.add_reaction("✅")
+
             embed = data["message"].embeds[0]
             new_value = ""
             for uid, taken in data["members"].items():
                 member = message.guild.get_member(uid)
                 status = "✅" if taken else "❌"
                 new_value += f"**{member.display_name}**\nShare: {data['each']}M | Status: {status}\n"
+
             embed.set_field_at(index=3, name="Players", value=new_value, inline=False)
             await data["message"].edit(embed=embed)
 
             if all(data["members"].values()):
                 await message.channel.send("✅ All players have taken their split, this split is now closed!")
 
-bot.run(os.environ["DISCORD_TOKEN"])
+# =======================
+# Paleidimas
+# =======================
+if __name__ == "__main__":
+    # Paleidžiam Flask serverį atskirame threade
+    Thread(target=run_flask).start()
+    # Paleidžiam Discord botą
+    bot.run(os.environ["DISCORD_TOKEN"])
