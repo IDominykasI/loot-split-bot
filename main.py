@@ -26,8 +26,14 @@ DATA_FILE = "splits.json"
 
 def load_splits():
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(DATA_FILE, "r") as f:
+                content = f.read().strip()
+                if not content:  # jei failas tuščias
+                    return {}
+                return json.loads(content)
+        except json.JSONDecodeError:
+            return {}
     return {}
 
 def save_splits():
