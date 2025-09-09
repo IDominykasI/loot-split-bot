@@ -1,4 +1,5 @@
 import os
+import json
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -6,7 +7,7 @@ from threading import Thread
 from flask import Flask
 
 # =======================
-# Flask (kad Render laikytų gyvą)
+# Flask dalis (Web service)
 # =======================
 app = Flask(__name__)
 
@@ -17,6 +18,27 @@ def home():
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
+# =======================
+# Pagalbinės funkcijos
+# =======================
+DATA_FILE = "splits.json"
+
+def load_splits():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r") as f:
+                content = f.read().strip()
+                if not content:  # jei failas tuščias
+                    return {}
+                return json.loads(content)
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+def save_splits():
+    with open(DATA_FILE, "w") as f:
+        json.dump(splits, f)
 
 # =======================
 # Discord dalis
@@ -30,74 +52,17 @@ intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
-# Splitai saugomi atmintyje
-splits = {}
+# Čia bus laikomi splits (užkraunami iš failo)
+splits = load_splits()
 
-# =======================
-# Atkurti splitus iš forumo
-# =======================
-async def restore_splits():
-    forum_channel = discord.utils.get(bot.get_all_channels(), name="lootsplits")
-    if not forum_channel:
-        print("❌ Nerastas forum kanalas lootsplits")
-        return
-
-    async for thread in forum_channel.active_threads():
-        try:
-            first_msg = await thread.fetch_message(thread.id)  # Thread starter
-            if not first_msg.embeds:
-                continue
-
-            embed = first_msg.embeds[0]
-            if embed.title != "💰 Loot Distribution in Progress 💰":
-                continue
-
-            # Ištraukiam amount, each ir statusus
-            amount = None
-            each = None
-            members = {}
-
-            for field in embed.fields:
-                if field.name == "Total split amount":
-                    amount = field.value.replace("💰 ", "").replace("M", "").strip()
-                if field.name == "Each player's share":
-                    each = field.value.replace("💰 ", "").replace("M", "").strip()
-                if field.name == "Players":
-                    for line in field.value.split("\n"):
-                        if not line.strip():
-                            continue
-                        if "Share:" in line and "Status:" in line:
-                            name = line.split("**")[1]  # display_name
-                            status = "✅" in line
-                            members[name] = status
-
-            splits[str(first_msg.id)] = {
-                "channel_id": thread.id,
-                "message_id": first_msg.id,
-                "amount": amount,
-                "each": each,
-                "members": members
-            }
-
-            print(f"✅ Atkurtas splitas iš gijos: {thread.name}")
-
-        except Exception as e:
-            print(f"Klaida atkuriant splitą: {e}")
-
-# =======================
-# Bot eventai
-# =======================
 @bot.event
 async def on_ready():
-    print(f"✅ Prisijungė kaip {bot.user}")
+    print(f"Joined as {bot.user}")
     try:
         synced = await tree.sync()
-        print(f"Slash komandos sinchronizuotos ({len(synced)})")
+        print(f"Slash commands synchronized ({len(synced)})")
     except Exception as e:
         print(e)
-
-    # Atkurti splitus
-    await restore_splits()
 
 @tree.command(name="split", description="Start loot split")
 async def split(interaction: discord.Interaction, amount: float, members: str):
@@ -130,17 +95,20 @@ async def split(interaction: discord.Interaction, amount: float, members: str):
     embed.add_field(name="Players", value=status_text, inline=False)
     embed.set_footer(text="📸 Submit loot screenshots to confirm participation!")
 
-    # Sukuriam naują forum thread
-    forum_channel = discord.utils.get(guild.channels, name="Lootsplits")
-    thread = await forum_channel.create_thread(name=f"Lootsplit {amount}M", content="Split started!", embed=embed)
+    msg = await interaction.channel.send(
+        content=f"Hello {' '.join(m.mention for m in selected_members)}, you are part of this loot split.",
+        embed=embed
+    )
 
-    splits[str(thread.id)] = {
-        "channel_id": thread.id,
-        "message_id": thread.id,
+    splits[str(msg.id)] = {
+        "members": {str(m.id): False for m in selected_members},
         "amount": amount,
         "each": per_share,
-        "members": {m.display_name: False for m in selected_members}
+        "message_id": msg.id,
+        "channel_id": msg.channel.id,
+        "starter": interaction.user.id
     }
+    save_splits()
 
     await interaction.response.send_message("✅ Split created!", ephemeral=True)
 
@@ -154,26 +122,29 @@ async def on_message(message):
     for msg_id, data in list(splits.items()):
         if message.channel.id != data["channel_id"]:
             continue
-
-        if message.author.display_name in data["members"] and not data["members"][message.author.display_name]:
-            data["members"][message.author.display_name] = True
+        if str(message.author.id) in data["members"] and not data["members"][str(message.author.id)]:
+            data["members"][str(message.author.id)] = True
             await message.add_reaction("✅")
 
-            # Paimam seną žinutę (thread starter)
+            # Paimam seną žinutę
             msg = await message.channel.fetch_message(data["message_id"])
             embed = msg.embeds[0]
 
             new_value = ""
-            for name, taken in data["members"].items():
+            for uid, taken in data["members"].items():
+                member = message.guild.get_member(int(uid))
                 status = "✅" if taken else "❌"
-                new_value += f"**{name}**\nShare: {data['each']}M | Status: {status}\n"
+                new_value += f"**{member.display_name if member else uid}**\nShare: {data['each']}M | Status: {status}\n"
 
             embed.set_field_at(index=3, name="Players", value=new_value, inline=False)
             await msg.edit(embed=embed)
 
+            save_splits()
+
             if all(data["members"].values()):
                 await message.channel.send("✅ All players have taken their split, this split is now closed!")
                 del splits[msg_id]
+                save_splits()
 
 # =======================
 # Paleidimas
@@ -181,5 +152,3 @@ async def on_message(message):
 if __name__ == "__main__":
     Thread(target=run_flask).start()
     bot.run(os.environ["DISCORD_TOKEN"])
-
-
