@@ -37,7 +37,7 @@ splits = {}
 # Atkurti splitus iš forumo
 # =======================
 async def restore_splits():
-    forum_channel = discord.utils.get(bot.get_all_channels(), name="Lootsplits")
+    forum_channel = discord.utils.get(bot.get_all_channels(), name="lootsplits")
     if not forum_channel:
         print("❌ Nerastas forum kanalas Lootsplits")
         return
@@ -181,3 +181,4 @@ async def on_message(message):
 if __name__ == "__main__":
     Thread(target=run_flask).start()
     bot.run(os.environ["DISCORD_TOKEN"])
+
