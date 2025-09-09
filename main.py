@@ -39,7 +39,7 @@ splits = {}
 async def restore_splits():
     forum_channel = discord.utils.get(bot.get_all_channels(), name="lootsplits")
     if not forum_channel:
-        print("❌ Nerastas forum kanalas Lootsplits")
+        print("❌ Nerastas forum kanalas lootsplits")
         return
 
     async for thread in forum_channel.active_threads():
@@ -181,4 +181,5 @@ async def on_message(message):
 if __name__ == "__main__":
     Thread(target=run_flask).start()
     bot.run(os.environ["DISCORD_TOKEN"])
+
 
