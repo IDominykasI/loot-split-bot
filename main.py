@@ -30,7 +30,7 @@ def load_splits():
         try:
             with open(DATA_FILE, "r") as f:
                 content = f.read().strip()
-                if not content:
+                if not content:  # jei failas tuščias
                     return {}
                 return json.loads(content)
         except json.JSONDecodeError:
@@ -56,54 +56,66 @@ tree = bot.tree
 # Čia bus laikomi splits (užkraunami iš failo)
 splits = load_splits()
 
+# =======================
+# Mygtukų View
+# =======================
 class SplitView(View):
-    def __init__(self, split_id, starter_id):
+    def __init__(self, split_id: str, starter_id: int):
         super().__init__(timeout=None)
         self.split_id = split_id
         self.starter_id = starter_id
 
-        # Sukuriam mygtukus kiekvienam žaidėjui
-        for uid in splits[split_id]["members"].keys():
-            self.add_item(MarkButton(split_id, starter_id, uid))
+        # Sukuriame po mygtuką kiekvienam nariui
+        if split_id in splits:
+            for uid in splits[split_id]["members"].keys():
+                member_button = Button(label=f"Mark {uid}", style=discord.ButtonStyle.primary, custom_id=f"mark_{uid}")
+                member_button.callback = self.make_callback(uid)
+                self.add_item(member_button)
 
-class MarkButton(Button):
-    def __init__(self, split_id, starter_id, user_id):
-        super().__init__(label=f"Mark {user_id}", style=discord.ButtonStyle.primary)
-        self.split_id = split_id
-        self.starter_id = starter_id
-        self.user_id = user_id
+    def make_callback(self, uid: str):
+        async def callback(interaction: discord.Interaction):
+            # Tik splito kūrėjas gali spausti mygtukus
+            if interaction.user.id != self.starter_id:
+                await interaction.response.send_message("❌ Only the split creator can use these buttons!", ephemeral=True)
+                return
 
-    async def callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.starter_id:
-            await interaction.response.send_message("❌ Tik splito kūrėjas gali naudoti šį mygtuką!", ephemeral=True)
-            return
+            split = splits.get(self.split_id)
+            if not split:
+                await interaction.response.send_message("❌ Split not found!", ephemeral=True)
+                return
 
-        data = splits.get(self.split_id)
-        if not data:
-            await interaction.response.send_message("❌ Splitas nerastas!", ephemeral=True)
-            return
+            # Pakeičiam statusą į ✅
+            split["members"][uid] = True
 
-        # Toggle statusą
-        data["members"][self.user_id] = not data["members"][self.user_id]
+            # Paimam seną žinutę
+            channel = bot.get_channel(split["channel_id"])
+            msg = await channel.fetch_message(split["message_id"])
+            embed = msg.embeds[0]
 
-        # Atnaujinam embed
-        channel = bot.get_channel(data["channel_id"])
-        msg = await channel.fetch_message(data["message_id"])
-        embed = msg.embeds[0]
+            new_value = ""
+            for member_id, taken in split["members"].items():
+                member = channel.guild.get_member(int(member_id))
+                status = "✅" if taken else "❌"
+                new_value += f"**{member.display_name if member else member_id}**\nShare: {split['each']}M | Status: {status}\n"
 
-        new_value = ""
-        for uid, taken in data["members"].items():
-            member = channel.guild.get_member(int(uid))
-            status = "✅" if taken else "❌"
-            new_value += f"**{member.display_name if member else uid}**\nShare: {data['each']}M | Status: {status}\n"
+            embed.set_field_at(index=3, name="Players", value=new_value, inline=False)
+            await msg.edit(embed=embed, view=SplitView(self.split_id, self.starter_id))
 
-        embed.set_field_at(index=3, name="Players", value=new_value, inline=False)
-        await msg.edit(embed=embed, view=SplitView(self.split_id, self.starter_id))
+            save_splits()
 
-        save_splits()
+            # Patikrinam ar visi paėmė
+            if all(split["members"].values()):
+                await channel.send("✅ All players have taken their split, this split is now closed!")
+                del splits[self.split_id]
+                save_splits()
 
-        await interaction.response.send_message(f"🔄 Statusas atnaujintas {member.display_name if member else uid}", ephemeral=True)
+            await interaction.response.defer()  # paslepia „thinking...“
 
+        return callback
+
+# =======================
+# Įvykiai
+# =======================
 @bot.event
 async def on_ready():
     print(f"Joined as {bot.user}")
@@ -113,6 +125,9 @@ async def on_ready():
     except Exception as e:
         print(e)
 
+# =======================
+# Komandos
+# =======================
 @tree.command(name="split", description="Start loot split")
 async def split(interaction: discord.Interaction, amount: float, members: str):
     guild = interaction.guild
@@ -146,11 +161,10 @@ async def split(interaction: discord.Interaction, amount: float, members: str):
 
     msg = await interaction.channel.send(
         content=f"Hello {' '.join(m.mention for m in selected_members)}, you are part of this loot split.",
-        embed=embed,
-        view=SplitView(str(interaction.id), interaction.user.id)
+        embed=embed
     )
 
-    splits[str(interaction.id)] = {
+    splits[str(msg.id)] = {
         "members": {str(m.id): False for m in selected_members},
         "amount": amount,
         "each": per_share,
@@ -159,6 +173,9 @@ async def split(interaction: discord.Interaction, amount: float, members: str):
         "starter": interaction.user.id
     }
     save_splits()
+
+    # Redaguojam žinutę, kad pridėtume mygtukus
+    await msg.edit(view=SplitView(str(msg.id), interaction.user.id))
 
     await interaction.response.send_message("✅ Split created!", ephemeral=True)
 
@@ -169,13 +186,14 @@ async def on_message(message):
     if message.author.bot or not message.attachments:
         return
 
-    for split_id, data in list(splits.items()):
+    for msg_id, data in list(splits.items()):
         if message.channel.id != data["channel_id"]:
             continue
         if str(message.author.id) in data["members"] and not data["members"][str(message.author.id)]:
             data["members"][str(message.author.id)] = True
             await message.add_reaction("✅")
 
+            # Paimam seną žinutę
             msg = await message.channel.fetch_message(data["message_id"])
             embed = msg.embeds[0]
 
@@ -186,13 +204,13 @@ async def on_message(message):
                 new_value += f"**{member.display_name if member else uid}**\nShare: {data['each']}M | Status: {status}\n"
 
             embed.set_field_at(index=3, name="Players", value=new_value, inline=False)
-            await msg.edit(embed=embed, view=SplitView(split_id, data["starter"]))
+            await msg.edit(embed=embed, view=SplitView(msg_id, data["starter"]))
 
             save_splits()
 
             if all(data["members"].values()):
                 await message.channel.send("✅ All players have taken their split, this split is now closed!")
-                del splits[split_id]
+                del splits[msg_id]
                 save_splits()
 
 # =======================
