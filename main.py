@@ -48,11 +48,10 @@ class SplitView(View):
 
         if split_id in splits:
             member_options = []
-            for uid, taken in splits[split_id]["members"].items():
-                if not taken:  # ✅ Rodo tik nepažymėtus
-                    member = guild.get_member(int(uid))
-                    name = member.display_name if member else f"User {uid}"
-                    member_options.append(discord.SelectOption(label=name, value=uid))
+            for uid in splits[split_id]["members"].keys():
+                member = guild.get_member(int(uid))
+                name = member.display_name if member else f"User {uid}"
+                member_options.append(discord.SelectOption(label=name, value=uid))
 
             if member_options:
                 select = Select(
@@ -104,7 +103,6 @@ class SplitView(View):
 
         uid = split["selected"]
         split["members"][uid] = True
-        del split["selected"]
 
         channel = bot.get_channel(split["channel_id"])
         msg = await channel.fetch_message(split["message_id"])
@@ -177,7 +175,7 @@ async def split(interaction: discord.Interaction, amount: float, members: str):
     msg = await interaction.channel.send(
         content=f"Hello {' '.join(m.mention for m in selected_members)}, you are part of this loot split.",
         embed=embed,
-        view=SplitView(str(interaction.id), interaction.user.id, guild)  # ✅
+        view=SplitView(str(interaction.id), interaction.user.id, guild)  # ✅ be msg.edit
     )
 
     splits[str(interaction.id)] = {
