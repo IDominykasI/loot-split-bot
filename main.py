@@ -1,7 +1,6 @@
 import os
 import time
 import threading
-import requests
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -9,42 +8,29 @@ from discord.ui import View, Select, Button
 from flask import Flask
 
 # =======================
-# Flask (Web Service)
+# Flask (web puslapis gyvybei palaikyti)
 # =======================
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "✅ Loot Split Bot is running and healthy!"
+    return "✅ Loot Split Bot is running!"
 
 def run_flask():
+    """Paleidžia Flask serverį Render'e (reikalinga gyvybei palaikyti)."""
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
 # =======================
-# Self-ping sistema
-# =======================
-def self_ping():
-    """Kas minutę pingina pats save, kad Render neužmigtų."""
-    url = os.environ.get("RENDER_EXTERNAL_URL") or "https://loot-split-bot.onrender.com"
-    while True:
-        try:
-            requests.get(url)
-        except Exception:
-            pass
-        time.sleep(60)
-
-# =======================
-# Globalūs duomenys
+# Globalūs kintamieji
 # =======================
 splits = {}
 
 # =======================
-# Discord
+# Discord bot
 # =======================
 intents = discord.Intents.default()
 intents.message_content = True
-intents.messages = True
 intents.guilds = True
 intents.members = True
 
@@ -52,7 +38,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
 # =======================
-# Split valdymas (dropdown + check)
+# Split sistema
 # =======================
 class SplitView(View):
     def __init__(self, split_id: str, starter_id: int, guild: discord.Guild):
@@ -137,7 +123,7 @@ class SplitView(View):
         await interaction.response.defer()
 
 # =======================
-# Įvykiai
+# Bot įvykiai
 # =======================
 @bot.event
 async def on_ready():
@@ -149,19 +135,7 @@ async def on_ready():
         print("⚠️ Command sync failed:", e)
 
 # =======================
-# Auto reconnect (apsauga nuo crash)
-# =======================
-def keep_alive():
-    """Automatiškai prižiūri, kad bot ryšys su Discord būtų atkurtas."""
-    while True:
-        try:
-            bot.run(os.environ["DISCORD_TOKEN"])
-        except Exception as e:
-            print(f"⚠️ Bot crashed: {e}. Restarting in 10 seconds...")
-            time.sleep(10)
-
-# =======================
-# Slash komanda /split
+# Komanda /split
 # =======================
 @tree.command(name="split", description="Start loot split")
 async def split(interaction: discord.Interaction, amount: float, members: str):
@@ -192,7 +166,7 @@ async def split(interaction: discord.Interaction, amount: float, members: str):
         status_text += f"**{m.display_name}**\nShare: {per_share}M | Status: ❌\n"
 
     embed.add_field(name="Players", value=status_text, inline=False)
-    embed.set_footer(text="📸 Submit loot screenshots to confirm participation!")
+    embed.set_footer(text="📸 Upload your screenshot to confirm you took your split!")
 
     splits[str(interaction.id)] = {
         "members": {str(m.id): False for m in selected_members},
@@ -205,7 +179,7 @@ async def split(interaction: discord.Interaction, amount: float, members: str):
 
     view = SplitView(str(interaction.id), interaction.user.id, guild)
     msg = await interaction.channel.send(
-        content=f"Hello {' '.join(m.mention for m in selected_members)}, you are part of this loot split.",
+        content=f"Hello {' '.join(m.mention for m in selected_members)}, you are part of this loot split!",
         embed=embed,
         view=view
     )
@@ -214,12 +188,11 @@ async def split(interaction: discord.Interaction, amount: float, members: str):
     await interaction.response.send_message("✅ Split created!", ephemeral=True)
 
 # =======================
-# Attachment (screenshot) handler
+# Automatinis pažymėjimas kai žmogus įkelia screenshot
 # =======================
 @bot.event
 async def on_message(message):
     await bot.process_commands(message)
-
     if message.author.bot or not message.attachments:
         return
 
@@ -251,5 +224,4 @@ async def on_message(message):
 # =======================
 if __name__ == "__main__":
     threading.Thread(target=run_flask).start()
-    threading.Thread(target=self_ping, daemon=True).start()
-    keep_alive()
+    bot.run(os.environ["DISCORD_TOKEN"])
