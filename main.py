@@ -1,36 +1,35 @@
 import os
-import time
-import threading
 import discord
 from discord.ext import commands
 from discord import app_commands
 from discord.ui import View, Select, Button
+from threading import Thread
 from flask import Flask
 
 # =======================
-# Flask (web puslapis gyvybei palaikyti)
+# Flask dalis (Web service)
 # =======================
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "✅ Loot Split Bot is running!"
+    return "Bot is running!"
 
 def run_flask():
-    """Paleidžia Flask serverį Render'e (reikalinga gyvybei palaikyti)."""
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
 # =======================
-# Globalūs kintamieji
+# Globalūs duomenys
 # =======================
 splits = {}
 
 # =======================
-# Discord bot
+# Discord dalis
 # =======================
 intents = discord.Intents.default()
 intents.message_content = True
+intents.messages = True
 intents.guilds = True
 intents.members = True
 
@@ -38,7 +37,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
 # =======================
-# Split sistema
+# Mygtukų + dropdown View
 # =======================
 class SplitView(View):
     def __init__(self, split_id: str, starter_id: int, guild: discord.Guild):
@@ -50,6 +49,7 @@ class SplitView(View):
         if split_id in splits:
             member_options = []
             for uid, taken in splits[split_id]["members"].items():
+                # visada rodom dropdown, net jeigu jau pažymėtas
                 member = guild.get_member(int(uid))
                 name = member.display_name if member else f"User {uid}"
                 label = f"{name} {'✅' if taken else '❌'}"
@@ -96,7 +96,10 @@ class SplitView(View):
 
         split = splits.get(self.split_id)
         if not split or "selected" not in split:
-            await interaction.response.send_message("⚠️ No player selected yet!", ephemeral=True)
+            await interaction.response.send_message(
+                "⚠️ No player selected yet!",
+                ephemeral=True
+            )
             return
 
         uid = split["selected"]
@@ -123,19 +126,19 @@ class SplitView(View):
         await interaction.response.defer()
 
 # =======================
-# Bot įvykiai
+# Įvykiai
 # =======================
 @bot.event
 async def on_ready():
-    print(f"✅ Bot connected as {bot.user}")
+    print(f"Joined as {bot.user}")
     try:
         synced = await tree.sync()
-        print(f"✅ Slash commands synced ({len(synced)})")
+        print(f"Slash commands synchronized ({len(synced)})")
     except Exception as e:
-        print("⚠️ Command sync failed:", e)
+        print(e)
 
 # =======================
-# Komanda /split
+# Komandos
 # =======================
 @tree.command(name="split", description="Start loot split")
 async def split(interaction: discord.Interaction, amount: float, members: str):
@@ -156,7 +159,10 @@ async def split(interaction: discord.Interaction, amount: float, members: str):
 
     per_share = round(amount / len(selected_members), 2)
 
-    embed = discord.Embed(title="💰 Loot Distribution in Progress 💰", color=discord.Color.gold())
+    embed = discord.Embed(
+        title="💰 Loot Distribution in Progress 💰",
+        color=discord.Color.gold()
+    )
     embed.add_field(name="Total split amount", value=f"💰 {amount}M", inline=False)
     embed.add_field(name="Each player's share", value=f"💰 {per_share}M", inline=False)
     embed.add_field(name="📣 Started by", value=interaction.user.mention, inline=False)
@@ -166,33 +172,33 @@ async def split(interaction: discord.Interaction, amount: float, members: str):
         status_text += f"**{m.display_name}**\nShare: {per_share}M | Status: ❌\n"
 
     embed.add_field(name="Players", value=status_text, inline=False)
-    embed.set_footer(text="📸 Upload your screenshot to confirm you took your split!")
+    embed.set_footer(text="📸 Submit loot screenshots to confirm participation!")
 
+    # Sukuriame view iškart
     splits[str(interaction.id)] = {
         "members": {str(m.id): False for m in selected_members},
         "amount": amount,
         "each": per_share,
-        "message_id": None,
+        "message_id": None,  # įrašysime vėliau
         "channel_id": interaction.channel.id,
         "starter": interaction.user.id
     }
 
     view = SplitView(str(interaction.id), interaction.user.id, guild)
     msg = await interaction.channel.send(
-        content=f"Hello {' '.join(m.mention for m in selected_members)}, you are part of this loot split!",
+        content=f"Hello {' '.join(m.mention for m in selected_members)}, you are part of this loot split.",
         embed=embed,
         view=view
     )
 
     splits[str(interaction.id)]["message_id"] = msg.id
+
     await interaction.response.send_message("✅ Split created!", ephemeral=True)
 
-# =======================
-# Automatinis pažymėjimas kai žmogus įkelia screenshot
-# =======================
 @bot.event
 async def on_message(message):
     await bot.process_commands(message)
+
     if message.author.bot or not message.attachments:
         return
 
@@ -223,5 +229,5 @@ async def on_message(message):
 # Paleidimas
 # =======================
 if __name__ == "__main__":
-    threading.Thread(target=run_flask).start()
+    Thread(target=run_flask).start()
     bot.run(os.environ["DISCORD_TOKEN"])
