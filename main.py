@@ -1,233 +1,136 @@
 import os
+import threading
 import discord
 from discord.ext import commands
-from discord import app_commands
-from discord.ui import View, Select, Button
-from threading import Thread
-from flask import Flask
+from discord.ui import View, Button, Modal, TextInput
+from fastapi import FastAPI
+import uvicorn
 
 # =======================
-# Flask dalis (Web service)
+# Minimalus HTTP serveris Render
 # =======================
-app = Flask(__name__)
+app = FastAPI()
 
-@app.route("/")
-def home():
-    return "Bot is running!"
+@app.get("/")
+async def root():
+    return {"status": "ok"}
 
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+def run_server():
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
+# =======================
+# Intents ir bot
+# =======================
+intents = discord.Intents.default()
+intents.message_content = True  # reikalinga interakcijoms su mygtukais/modalu
+
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 # =======================
 # Globalūs duomenys
 # =======================
-splits = {}
+applications_data = {}  # Laikys atsakymus laikinas: {user_id: {Q1: answer,...}}
 
 # =======================
-# Discord dalis
+# Modal – klausimai
 # =======================
-intents = discord.Intents.default()
-intents.message_content = True
-intents.messages = True
-intents.guilds = True
-intents.members = True
+class ApplicationModal(Modal):
+    def __init__(self, user_id):
+        super().__init__(title="Guild Application Survey")
+        self.user_id = user_id
 
-bot = commands.Bot(command_prefix="!", intents=intents)
-tree = bot.tree
+        for i in range(1, 11):
+            self.add_item(TextInput(
+                label=f"Question {i}",
+                style=discord.TextStyle.paragraph,
+                placeholder=f"Answer for question {i}"
+            ))
 
-# =======================
-# Mygtukų + dropdown View
-# =======================
-class SplitView(View):
-    def __init__(self, split_id: str, starter_id: int, guild: discord.Guild):
-        super().__init__(timeout=None)
-        self.split_id = split_id
-        self.starter_id = starter_id
-        self.guild = guild
+    async def on_submit(self, interaction: discord.Interaction):
+        applications_data[self.user_id] = {f"Q{i+1}": field.value for i, field in enumerate(self.children)}
 
-        if split_id in splits:
-            member_options = []
-            for uid, taken in splits[split_id]["members"].items():
-                # visada rodom dropdown, net jeigu jau pažymėtas
-                member = guild.get_member(int(uid))
-                name = member.display_name if member else f"User {uid}"
-                label = f"{name} {'✅' if taken else '❌'}"
-                member_options.append(discord.SelectOption(label=label, value=uid))
-
-            select = Select(
-                placeholder="Select a player...",
-                options=member_options,
-                custom_id=f"select_{split_id}"
-            )
-            select.callback = self.select_callback
-            self.add_item(select)
-
-            check_button = Button(
-                label="Check",
-                style=discord.ButtonStyle.success,
-                custom_id=f"check_{split_id}"
-            )
-            check_button.callback = self.check_callback
-            self.add_item(check_button)
-
-    async def select_callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.starter_id:
-            await interaction.response.send_message(
-                "❌ Only the split creator can select players!",
-                ephemeral=True
-            )
-            return
-
-        selected_uid = interaction.data["values"][0]
-        splits[self.split_id]["selected"] = selected_uid
         await interaction.response.send_message(
-            f"✅ Selected <@{selected_uid}> for update. Now press **Check** to confirm.",
+            "✅ Survey submitted! Your application has been sent.",
             ephemeral=True
         )
 
-    async def check_callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.starter_id:
+        guild = interaction.guild
+        channel = discord.utils.get(guild.text_channels, name="applications")
+        if channel:
+            thread = await channel.create_thread(
+                name=f"Application - {interaction.user.display_name}",
+                type=discord.ChannelType.public_thread,
+                auto_archive_duration=1440
+            )
+
+            embed = discord.Embed(
+                title=f"Application from {interaction.user}",
+                color=discord.Color.blue()
+            )
+            for i, field in enumerate(self.children):
+                embed.add_field(name=f"Q{i+1}", value=field.value, inline=False)
+
+            await thread.send(embed=embed)
+
+# =======================
+# Mygtukas embed žinutėje
+# =======================
+class ApplyButtonView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Apply Now", style=discord.ButtonStyle.green)
+    async def apply_button(self, interaction: discord.Interaction, button: Button):
+        try:
+            await interaction.user.send_modal(ApplicationModal(interaction.user.id))
             await interaction.response.send_message(
-                "❌ Only the split creator can use this button!",
+                "📬 Check your DMs to fill the application.",
                 ephemeral=True
             )
-            return
-
-        split = splits.get(self.split_id)
-        if not split or "selected" not in split:
+        except discord.Forbidden:
             await interaction.response.send_message(
-                "⚠️ No player selected yet!",
+                "❌ I cannot DM you. Please enable DMs from server members.",
                 ephemeral=True
             )
-            return
 
-        uid = split["selected"]
-        split["members"][uid] = True
-        del split["selected"]
+# =======================
+# Slash komanda /send_application_embed
+# =======================
+@bot.tree.command(name="send_application_embed", description="Send the application embed to channel")
+async def send_application_embed(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_messages:
+        await interaction.response.send_message(
+            "❌ You don't have permission to use this command.",
+            ephemeral=True
+        )
+        return
 
-        channel = bot.get_channel(split["channel_id"])
-        msg = await channel.fetch_message(split["message_id"])
-        embed = msg.embeds[0]
+    embed = discord.Embed(
+        title="Guild Application",
+        description="Click the button below to start your application!",
+        color=discord.Color.green()
+    )
 
-        new_value = ""
-        for member_id, taken in split["members"].items():
-            member = channel.guild.get_member(int(member_id))
-            status = "✅" if taken else "❌"
-            new_value += f"**{member.display_name if member else member_id}**\nShare: {split['each']}M | Status: {status}\n"
-
-        embed.set_field_at(index=3, name="Players", value=new_value, inline=False)
-        await msg.edit(embed=embed, view=SplitView(self.split_id, self.starter_id, channel.guild))
-
-        if all(split["members"].values()):
-            await channel.send("✅ All players have taken their split, this split is now closed!")
-            del splits[self.split_id]
-
-        await interaction.response.defer()
+    view = ApplyButtonView()
+    await interaction.channel.send(embed=embed, view=view)
+    await interaction.response.send_message("✅ Application embed sent!", ephemeral=True)
 
 # =======================
 # Įvykiai
 # =======================
 @bot.event
 async def on_ready():
-    print(f"Joined as {bot.user}")
-    try:
-        synced = await tree.sync()
-        print(f"Slash commands synchronized ({len(synced)})")
-    except Exception as e:
-        print(e)
-
-# =======================
-# Komandos
-# =======================
-@tree.command(name="split", description="Start loot split")
-async def split(interaction: discord.Interaction, amount: float, members: str):
-    guild = interaction.guild
-    user_mentions = [m.strip() for m in members.split()]
-    selected_members = []
-
-    for m in user_mentions:
-        if m.startswith("<@") and m.endswith(">"):
-            user_id = int(m[2:-1].replace("!", ""))
-            member = guild.get_member(user_id)
-            if member:
-                selected_members.append(member)
-
-    if not selected_members:
-        await interaction.response.send_message("No valid members specified!", ephemeral=True)
-        return
-
-    per_share = round(amount / len(selected_members), 2)
-
-    embed = discord.Embed(
-        title="💰 Loot Distribution in Progress 💰",
-        color=discord.Color.gold()
-    )
-    embed.add_field(name="Total split amount", value=f"💰 {amount}M", inline=False)
-    embed.add_field(name="Each player's share", value=f"💰 {per_share}M", inline=False)
-    embed.add_field(name="📣 Started by", value=interaction.user.mention, inline=False)
-
-    status_text = ""
-    for m in selected_members:
-        status_text += f"**{m.display_name}**\nShare: {per_share}M | Status: ❌\n"
-
-    embed.add_field(name="Players", value=status_text, inline=False)
-    embed.set_footer(text="📸 Submit loot screenshots to confirm participation!")
-
-    # Sukuriame view iškart
-    splits[str(interaction.id)] = {
-        "members": {str(m.id): False for m in selected_members},
-        "amount": amount,
-        "each": per_share,
-        "message_id": None,  # įrašysime vėliau
-        "channel_id": interaction.channel.id,
-        "starter": interaction.user.id
-    }
-
-    view = SplitView(str(interaction.id), interaction.user.id, guild)
-    msg = await interaction.channel.send(
-        content=f"Hello {' '.join(m.mention for m in selected_members)}, you are part of this loot split.",
-        embed=embed,
-        view=view
-    )
-
-    splits[str(interaction.id)]["message_id"] = msg.id
-
-    await interaction.response.send_message("✅ Split created!", ephemeral=True)
-
-@bot.event
-async def on_message(message):
-    await bot.process_commands(message)
-
-    if message.author.bot or not message.attachments:
-        return
-
-    for split_id, data in list(splits.items()):
-        if message.channel.id != data["channel_id"]:
-            continue
-        if str(message.author.id) in data["members"] and not data["members"][str(message.author.id)]:
-            data["members"][str(message.author.id)] = True
-            await message.add_reaction("✅")
-
-            msg = await message.channel.fetch_message(data["message_id"])
-            embed = msg.embeds[0]
-
-            new_value = ""
-            for uid, taken in data["members"].items():
-                member = message.guild.get_member(int(uid))
-                status = "✅" if taken else "❌"
-                new_value += f"**{member.display_name if member else uid}**\nShare: {data['each']}M | Status: {status}\n"
-
-            embed.set_field_at(index=3, name="Players", value=new_value, inline=False)
-            await msg.edit(embed=embed, view=SplitView(split_id, data["starter"], message.guild))
-
-            if all(data["members"].values()):
-                await message.channel.send("✅ All players have taken their split, this split is now closed!")
-                del splits[split_id]
+    print(f"Bot logged in as {bot.user}")
+    await bot.tree.sync()
+    print("Slash commands synchronized.")
 
 # =======================
 # Paleidimas
 # =======================
 if __name__ == "__main__":
-    Thread(target=run_flask).start()
+    # Paleidžiam minimalų HTTP serverį Render fone
+    threading.Thread(target=run_server, daemon=True).start()
+
+    # Paleidžiam Discord botą
     bot.run(os.environ["DISCORD_TOKEN"])
